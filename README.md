@@ -26,3 +26,7 @@ And then run the bot:
 python Telescam_scanner_bot.py
 
 Aforementioned metadata is stored in a sqlite database named telescam.db and APK samples are stored in ./apk/ directory
+
+## To Do
+Handle the case when the analysis service is down (Koodous.com here), and save the files locally or put them in a queue
+mark them for later analysis.
