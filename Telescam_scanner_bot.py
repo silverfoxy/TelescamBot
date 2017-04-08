@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- encoding: utf-8 -*-
 
-import telebot, hashlib, requests, os, sqlite3, json, logging
+import telebot, hashlib, requests, os, sqlite3, json, logging, time
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from db import APK, Certificate, Submission, Base
@@ -15,12 +15,16 @@ class Telescam_scanner_bot :
         self.FILES_DIR = './apk/'
     
     def run(self) :
-        self.bot.polling()
+        try :
+            self.bot.polling(none_stop=True)
+            logger.error('Started Polling')
+        except Exception as e :
+            logger.error('Error occured during polling', exc_info=True)
 
     def valid_apk(self, file) :
-        if file[0:2] == 'PK' : # Zip Archive (APK)
+        if file[0:2] == 'PK' : #Zip Archive (APK)
             return True
-            logging.info('Received a malformed APK.')
+        logging.debug('Received a malformed APK.')
         return False
 
     def send_for_analysis(self, apk_file) :
@@ -34,28 +38,50 @@ class Telescam_scanner_bot :
         if upload_url == None :
             # File Already Exists, Link existing report
             try :
-                result_url = self.koodous_link_existing_analysis(sha256sum)
+                # If File Was Uploaded But Not Analyzed, Handle Here
+                result = self.koodous_link_existing_analysis_json(sha256sum)
+                if result == None :
+                    self.koodous_analyze(sha256sum)
+                timeout = 20
+                while result == None and timeout > 0 :
+                    logger.debug('Analysis in progress')
+                    result = self.koodous_link_existing_analysis_json(sha256sum)
+                    timeout = timeout - 1
+                    time.sleep(30)
+                if timeout <= 0 :
+                     logger.debug('Analysis Timed out')
+                     return None
+                logger.debug('Analysis result is available: %s' % self.koodous_link_existing_analysis(sha256sum))
             except Exception as e:
                 logger.error('Failed to link the file on koodous at submit_to_koodous with sha256: %s' % sha256sum, exc_info=True)
                 return None
         else :
-            # Check for possible errors
+            # New File, Upload and Request Analysis
             try:
                 requests.post(upload_url, files={'file' : apk_file})
-                requests.get(url='https://api.koodous.com/apks/%s/analyze' & sha256sum, headers={'Authorization': 'Token %s' % self.KOODOUS_API_TOKEN})
+                self.koodous_analyze(sha256sum)
             except Exception as e:
                 logger.error('Failed to send the file to koodous for analysis at submit_to_koodous with sha256: %s' % sha256sum, exc_info=True)
                 return None
         return sha256sum
 
+    def koodous_analyze(self, sha256sum) :
+        try :
+            logger.debug('Requesting new analysis to be done for %s' % sha256sum)
+            requests.get(url='https://api.koodous.com/apks/%s/analyze' % sha256sum, headers={'Authorization': 'Token %s' % self.KOODOUS_API_TOKEN})
+        except Exception as e:
+            raise e
+
     def koodous_get_upload_token(self, sha256sum) :
         url_koodous = "https://api.koodous.com/apks/%s/get_upload_url" % sha256sum
         try :
+            logger.debug('Getting upload token for %s' % sha256sum)
             r = requests.get(url = url_koodous, headers = { 'Authorization': 'Token %s' % self.KOODOUS_API_TOKEN })
         except Exception as e :
             logger.error('Failed to get upload_url at koodous_get_upload_token with sha256: %s' % sha256sum, exc_info=True)
             return None
         if r.status_code == 409 :
+            logger.error('File already analyzed sha256: %s, got 409' % sha256sum)
             return None
         else :
             try :
@@ -69,7 +95,11 @@ class Telescam_scanner_bot :
 
     def koodous_link_existing_analysis_json(self, sha256sum) :
         try :
+            logger.debug('Requesting json for available analysis for %s' % sha256sum)
             r = requests.get('https://api.koodous.com/apks/%s/analysis' % sha256sum)
+            if r.json() == {}:
+                logger.debug('Received Empty json response in koodous_link_existing_analysis_json with sha256 %s' % sha256sum)
+                return None
             return r.json()
         except Exception as e :
             logger.error('Failed to link existing json at koodous_link_existing_analysis_json with sha256: %s' % sha256sum, exc_info=True)
@@ -137,22 +167,26 @@ class Telescam_scanner_bot :
                 filename=message.document.file_name,
                 apk=new_apk)
             session.add(new_submission)
-            logger.debug("Checking if current apk exists in the database")
+            logger.debug("Adding submission details to database")
             try :
                 session.commit()
+                logger.debug("Saved changes to database")
                 return True
             except Exception as e :
                 logger.error('Failed to save changes to the database', exc_info=True)
                 raise
+        except KeyError, e :
+            logger.error('Corrupted APK', exc_info=True)
+            return False
         except Exception as e :
             logger.error('Failed to save apk information', exc_info=True)
+            logger.error('Json to process: %s' % data)
             return False
 
 if __name__ == '__main__' :
 
     logging.basicConfig(level=logging.DEBUG)
-    # urllib3 spams the log, since telegram is polling for new messages
-    logging.getLogger('requests.packages.urllib3.connectionpool').setLevel(logging.ERROR)
+    logging.getLogger('requests.packages.urllib3.connectionpool').setLevel(logging.ERROR) #urllib3 spams the log, since telegram is polling for new messages
     logger = logging.getLogger(__name__)
 
     telegram_bot = Telescam_scanner_bot()
@@ -164,13 +198,13 @@ if __name__ == '__main__' :
     def send_welcome(message):
         try :
             bot.reply_to(message, u"""\
-    Welcome to TeleScam ‌Bot, Submit your malicious APK samples here.
-    For more information about our project visit http://telescam.ir
-    سلام به بات دیده بان تلگرام خوش آمدید، نمونه apk های مشکوک خود را از این طریق برای ما ارسال کنید.
-    برای کسب اطلاعات بیشتر در خصوص این پروژه به وبسایت http://telescam.ir مراجعه کنید.
-    کانال تلگرام پروژه
-    @teleScam
-    """)
+Welcome to TeleScam ‌Bot, Submit your malicious APK samples here.
+For more information about our project visit http://telescam.ir
+سلام به بات دیده بان تلگرام خوش آمدید، نمونه apk های مشکوک خود را از این طریق برای ما ارسال کنید.
+برای کسب اطلاعات بیشتر در خصوص این پروژه به وبسایت http://telescam.ir مراجعه کنید.
+کانال تلگرام پروژه
+@teleScam
+""")
         except Exception as e :
             logger.error('Failed to reply with help message', exc_info=True)
 
@@ -187,20 +221,21 @@ if __name__ == '__main__' :
                 except Exception as e :
                     logger.error('Failed to reply with "Failed to analyze"', exc_info=True)
             else :
-                # Save file save(sha256sum, message, file)
+                #Save file save(sha256sum, message, file)
                 if telegram_bot.save(sha256sum, message, downloaded_file):
                     try :
                         bot.reply_to(message, u'''فایل ارسالی جهت بررسی ثبت شد.
-            لینک آنالیز اولیه: %s
-            @telescam''' % telegram_bot.koodous_link_existing_analysis(sha256sum))
+لینک آنالیز اولیه: %s
+@telescam''' % telegram_bot.koodous_link_existing_analysis(sha256sum))
                     except Exception as e :
                         logger.error('Failed to reply with "Failed to analyze"', exc_info=True)
                 else :
                     try :
-                        bot.reply_to(message, u'آنالیز فایل ارسالی با مشکل مواجه شد، لطفا دوباره سعی کنید.')
+                        bot.reply_to(message, u'''آنالیز فایل ارسالی با مشکل مواجه شد، لطفا دوباره سعی کنید.
+دلایل این مشکل می تواند از دسترس خارج بودن سرویس آنالیز koodous.com و یا خراب بودن فایل APK ارسالی باشد.''')
                     except Exception as e :
                         logger.error('Failed to reply with "Failed to analyze"', exc_info=True)
-        elif "apk" in os.path.splitext(message.document.file_name)[1].lower() : # if file extension is apk, but the content shows otherwise
+        elif "apk" in os.path.splitext(message.document.file_name)[1].lower() : #if file extension is apk, but the content shows otherwise
             try :
                 bot.reply_to(message, 'فایل ارسالی APK نیست.')
             except Exception as e :
