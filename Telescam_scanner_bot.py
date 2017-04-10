@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- encoding: utf-8 -*-
 
-import telebot, hashlib, requests, os, sqlite3, json, logging, time
+import telebot, hashlib, requests, os, sqlite3, json, logging, logging.handlers, time
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from db import APK, Certificate, Submission, Base
@@ -38,28 +38,28 @@ class Telescam_scanner_bot :
         if upload_url == None :
             # File Already Exists, Link existing report
             try :
-                # If File Was Uploaded But Not Analyzed, Handle Here
                 result = self.koodous_link_existing_analysis_json(sha256sum)
+                analysis_result_status = self.koodous_analyze(sha256sum)
+                # If File Was Uploaded But Not Analyzed, Handle Here
                 if result == None :
-                    self.koodous_analyze(sha256sum)
-                timeout = 20
-                while result == None and timeout > 0 :
-                    logger.debug('Analysis in progress')
-                    result = self.koodous_link_existing_analysis_json(sha256sum)
-                    timeout = timeout - 1
-                    time.sleep(30)
-                if timeout <= 0 :
-                     logger.debug('Analysis Timed out')
-                     return None
+                    if not analysis_result_status :
+                        return None
+                    # Wait for analysis to be completed
+                    self.koodous_wait_for_result(sha256sum)
                 logger.debug('Analysis result is available: %s' % self.koodous_link_existing_analysis(sha256sum))
             except Exception as e:
                 logger.error('Failed to link the file on koodous at submit_to_koodous with sha256: %s' % sha256sum, exc_info=True)
                 return None
         else :
             # New File, Upload and Request Analysis
-            try:
+            try :
+                logger.debug('Uploading the file')
                 requests.post(upload_url, files={'file' : apk_file})
-                self.koodous_analyze(sha256sum)
+                analysis_result_status = self.koodous_analyze(sha256sum)
+                if not analysis_result_status :
+                    return None
+                # Wait for analysis to be completed
+                self.koodous_wait_for_result(sha256sum)
             except Exception as e:
                 logger.error('Failed to send the file to koodous for analysis at submit_to_koodous with sha256: %s' % sha256sum, exc_info=True)
                 return None
@@ -69,8 +69,28 @@ class Telescam_scanner_bot :
         try :
             logger.debug('Requesting new analysis to be done for %s' % sha256sum)
             requests.get(url='https://api.koodous.com/apks/%s/analyze' % sha256sum, headers={'Authorization': 'Token %s' % self.KOODOUS_API_TOKEN})
+            return True
         except Exception as e:
-            raise e
+            logger.error('Error while requesting analysis for sha256: %s' % sha256sum, exc_info=True)
+            return False
+
+
+    def koodous_wait_for_result(self, sha256sum) :
+        timeout = 15
+        result = None
+        while result == None and timeout > 0 :
+            logger.debug('Analysis in progress')
+            result = self.koodous_link_existing_analysis_json(sha256sum)
+            timeout = timeout - 1
+            time.sleep(120)
+        if timeout <= 0 :
+             logger.debug('Analysis Timed out')
+             return False
+        elif result != None :
+            logger.debug('Analysis completed')
+            return True
+        logger.debug('Analysis Failed')
+        return False
 
     def koodous_get_upload_token(self, sha256sum) :
         url_koodous = "https://api.koodous.com/apks/%s/get_upload_url" % sha256sum
@@ -81,7 +101,7 @@ class Telescam_scanner_bot :
             logger.error('Failed to get upload_url at koodous_get_upload_token with sha256: %s' % sha256sum, exc_info=True)
             return None
         if r.status_code == 409 :
-            logger.error('File already analyzed sha256: %s, got 409' % sha256sum)
+            logger.debug('File already analyzed sha256: %s, got 409' % sha256sum)
             return None
         else :
             try :
@@ -116,8 +136,13 @@ class Telescam_scanner_bot :
             logger.debug('Received empty json response at save from koodous_link_existing_analysis_json')
             return False
         try :
-            new_certificate = session.query(Certificate).filter(Certificate.sha1 == data['androguard']['certificate']['sha1']).first()
-            logger.debug("Checking if current certificate exists in the database")
+            new_certificate = None
+            try :
+                new_certificate = session.query(Certificate).filter(Certificate.sha1 == data['androguard']['certificate']['sha1']).first()
+                logger.debug("Checking if current certificate exists in the database")
+            except KeyError, e :
+                logger.debug("Koodous couldn't exctract the certificate, Corrupted APK, using default certificate")
+                new_certificate = session.query(Certificate).filter(Certificate.sha1 == '-').first()
             if new_certificate == None :
                 logger.debug("Certificate didn't exist")
                 new_certificate = Certificate(sha1=data['androguard']['certificate']['sha1'],
@@ -188,6 +213,9 @@ if __name__ == '__main__' :
     logging.basicConfig(level=logging.DEBUG)
     logging.getLogger('requests.packages.urllib3.connectionpool').setLevel(logging.ERROR) #urllib3 spams the log, since telegram is polling for new messages
     logger = logging.getLogger(__name__)
+    log_handler = logging.handlers.WatchedFileHandler('log.txt')
+    log_handler.setFormatter(logging.Formatter(fmt='%(asctime)s %(levelname)-8s %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+    logger.addHandler(log_handler)
 
     telegram_bot = Telescam_scanner_bot()
     bot = telegram_bot.bot
@@ -209,10 +237,12 @@ For more information about our project visit http://telescam.ir
             logger.error('Failed to reply with help message', exc_info=True)
 
     @bot.message_handler(func=lambda message: True, content_types=['document'])
-    def on_receive_file(message):
+    def on_receive_file(message) :
+        bot.send_chat_action(message.chat.id, 'typing')
         file_info = bot.get_file(message.document.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         if telegram_bot.valid_apk(downloaded_file) :
+            bot.reply_to(message, u'فایل دریافت شد و آنالیز اولیه فایل در حال انجام است، پس از اتمام کار از همین طریق به شما اطلاع داده خواهد شد.')
             telegram_bot.bot.send_chat_action(message.chat.id, 'typing')
             sha256sum = telegram_bot.send_for_analysis(downloaded_file)
             if sha256sum == None :
@@ -232,7 +262,8 @@ For more information about our project visit http://telescam.ir
                 else :
                     try :
                         bot.reply_to(message, u'''آنالیز فایل ارسالی با مشکل مواجه شد، لطفا دوباره سعی کنید.
-دلایل این مشکل می تواند از دسترس خارج بودن سرویس آنالیز koodous.com و یا خراب بودن فایل APK ارسالی باشد.''')
+دلایل این مشکل می تواند از دسترس خارج بودن سرویس آنالیز koodous.com و یا خراب بودن فایل APK ارسالی باشد.
+%s''' % telegram_bot.koodous_link_existing_analysis(sha256sum))
                     except Exception as e :
                         logger.error('Failed to reply with "Failed to analyze"', exc_info=True)
         elif "apk" in os.path.splitext(message.document.file_name)[1].lower() : #if file extension is apk, but the content shows otherwise

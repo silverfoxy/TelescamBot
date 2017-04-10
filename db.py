@@ -1,7 +1,7 @@
 
 from sqlalchemy import Column, ForeignKey, Integer, String, DateTime, create_engine
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, sessionmaker
 import datetime
 
 Base = declarative_base()
@@ -51,3 +51,19 @@ class Submission(Base) :
 
 engine = create_engine('sqlite:///telescam.db')
 Base.metadata.create_all(engine)
+
+# Create empty certificate for corrupted APKs
+Base.metadata.bind = engine
+DBSession = sessionmaker(bind=engine)
+session = DBSession()
+new_certificate = session.query(Certificate).filter(Certificate.sha1 == '-').first()
+if new_certificate == None :
+	new_certificate = Certificate(sha1='-',
+	                    not_before='-',
+	                    not_after='-',
+	                    subjectdn='-',
+	                    issuerdn='-',
+	                    serial='-')
+	session.add(new_certificate)
+	session.commit()
+
