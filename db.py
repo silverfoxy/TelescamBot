@@ -49,7 +49,8 @@ class Submission(Base) :
 	apk = relationship(APK)
 	date = Column(DateTime, default=datetime.datetime.utcnow)
 
-engine = create_engine('sqlite:///telescam.db')
+# engine = create_engine('sqlite:///telescam.db')
+engine = create_engine('mysql://telescam_user:YP7NQ30D@localhost:3306/telescam_analysis', echo=False)
 Base.metadata.create_all(engine)
 
 # Create empty certificate for corrupted APKs
