@@ -8,6 +8,7 @@ Base = declarative_base()
 
 class Certificate(Base) :
 	__tablename__ = 'tbl_certificates'
+	__table_args__ = {'mysql_collate': 'utf8mb4_unicode_ci'}
 	id = Column(Integer, primary_key=True)
 	sha1 = Column(String(40), nullable=False)
 	not_before = Column(String(40), nullable=False)
@@ -18,6 +19,7 @@ class Certificate(Base) :
 
 class APK(Base) :
 	__tablename__ = 'tbl_apks'
+	__table_args__ = {'mysql_collate': 'utf8mb4_unicode_ci'}
 	id = Column(Integer, primary_key=True)
 	app_name = Column(String(250), nullable=False)
 	package_name = Column(String(250), nullable=False)
@@ -31,6 +33,7 @@ class APK(Base) :
 
 class Submission(Base) :
 	__tablename__ = 'tbl_submissions'
+	__table_args__ = {'mysql_collate': 'utf8mb4_unicode_ci'}
 	id = Column(Integer, primary_key=True)
 	submitted_to_username = Column(String(250), nullable=True)
 	submitted_to_title = Column(String(250), nullable=True)
@@ -50,7 +53,7 @@ class Submission(Base) :
 	date = Column(DateTime, default=datetime.datetime.utcnow)
 
 # engine = create_engine('sqlite:///telescam.db')
-engine = create_engine('mysql://telescam_user:YP7NQ30D@localhost:3306/telescam_analysis', echo=False)
+engine = create_engine('mysql://telescam_user:telescam_password@localhost:3306/telescam_db?charset=utf8mb4', echo=False)
 Base.metadata.create_all(engine)
 
 # Create empty certificate for corrupted APKs

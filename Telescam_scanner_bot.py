@@ -20,6 +20,9 @@ class Telescam_scanner_bot :
             logger.error('Started Polling')
         except Exception as e :
             logger.error('Error occured during polling', exc_info=True)
+            self.bot.stop_polling()
+            time.sleep(10)
+            self.run()
 
     def valid_apk(self, file) :
         if file[0:2] == 'PK' : #Zip Archive (APK)
@@ -126,7 +129,7 @@ class Telescam_scanner_bot :
             return None
 
     def save(self, sha256sum, message, file) :
-        engine = create_engine('sqlite:///telescam.db')
+        engine = create_engine('mysql://telescam_user:telescam_password@localhost:3306/telescam_db?charset=utf8mb4', echo=False)
         Base.metadata.bind = engine
         DBSession = sessionmaker(bind=engine)
         session = DBSession()
